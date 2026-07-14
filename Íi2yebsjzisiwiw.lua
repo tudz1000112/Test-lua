@@ -1,115 +1,99 @@
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local VirtualUser = game:GetService("VirtualUser") -- Dùng để auto click chuột
+
 local LocalPlayer = Players.LocalPlayer
 
--- Cấu hình màu sắc
-local ESP_COLOR = Color3.fromRGB(255, 0, 0) -- Màu đỏ cho viền định vị
-local HEALTH_GOOD = Color3.fromRGB(0, 255, 0) -- Máu đầy (Xanh lá)
-local HEALTH_LOW = Color3.fromRGB(255, 0, 0) -- Máu thấp (Đỏ)
+-- ================= CẤU HÌNH AUTO FARM =================
+_G.AutoFarm = true         -- Bật/Tắt Auto Farm (true là bật, false là tắt)
+local MONSTER_NAME = "Thug" -- ĐỔI THÀNH TÊN QUÁI VẬT BẠN MUỐN FARM
+local TWEEN_SPEED = 40      -- Tốc độ bay (Không nên để quá cao để tránh bị kick/ban)
+local FARM_HEIGHT = 5       -- Khoảng cách đứng trên đầu quái để né chiêu
+-- =======================================================
 
--- Hàm tạo định vị và thanh máu cho quái vật
-local function createMonsterESP(monster)
-    -- Kiểm tra xem đối tượng có phải là quái vật (có Humanoid và HumanoidRootPart) không
-    local humanoid = monster:FindFirstChildOfClass("Humanoid")
-    local rootPart = monster:FindFirstChild("HumanoidRootPart")
+-- 1. HÀM TÌM QUÁI VẬT GẦN NHẤT THEO TÊN
+local function getClosestMonster()
+    local closest = nil
+    local shortestDistance = math.huge
     
-    if not humanoid or not rootPart or monster == LocalPlayer.Character then return end
-    if rootPart:FindFirstChild("HealthBarGUI") then return end -- Tránh tạo trùng
-
-    -- 1. TẠO VIỀN ĐỊNH VỊ (HIGHLIGHT ESP)
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "MonsterESP"
-    highlight.FillColor = ESP_COLOR
-    highlight.FillTransparency = 0.6 -- Độ trong suốt của thân quái
-    highlight.OutlineColor = Color3.fromRGB(255, 255, 255) -- Viền trắng xuyên tường
-    highlight.OutlineTransparency = 0
-    highlight.Adornee = monster
-    highlight.Parent = monster
-
-    -- 2. TẠO THANH MÁU TRÊN ĐẦU (BILLBOARD GUI)
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "HealthBarGUI"
-    billboard.Size = UDim2.new(3.5, 0, 0.8, 0)
-    billboard.StudsOffset = Vector3.new(0, 3.5, 0) -- Chiều cao hiển thị trên đầu quái
-    billboard.AlwaysOnTop = true -- Luôn hiện trên cùng, xuyên tường
-    billboard.Adornee = rootPart
-    billboard.Parent = rootPart
-
-    -- Khung nền (Background) của thanh máu
-    local bgFrame = Instance.new("Frame")
-    bgFrame.Size = UDim2.new(1, 0, 0.3, 0)
-    bgFrame.Position = UDim2.new(0, 0, 0.7, 0)
-    bgFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    bgFrame.BorderSizePixel = 1
-    bgFrame.Parent = billboard
-
-    -- Thanh máu thực tế (Fill)
-    local healthFrame = Instance.new("Frame")
-    healthFrame.Size = UDim2.new(1, 0, 1, 0)
-    healthFrame.BackgroundColor3 = HEALTH_GOOD
-    healthFrame.BorderSizePixel = 0
-    healthFrame.Parent = bgFrame
-
-    -- Tên của quái vật
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size = UDim2.new(1, 0, 0.6, 0)
-    nameLabel.Position = UDim2.new(0, 0, 0, 0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Text = monster.Name
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextScaled = true
-    nameLabel.Font = Enum.Font.SourceSansBold
-    nameLabel.Parent = billboard
-
-    -- Hàm cập nhật thanh máu khi quái bị đánh
-    local function updateHealth()
-        if humanoid and humanoid.Parent then
-            local healthRatio = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-            -- Hiệu ứng co giãn thanh máu
-            healthFrame:TweenSize(UDim2.new(healthRatio, 0, 1, 0), "Out", "Quad", 0.2, true)
+    -- Quét toàn bộ Workspace (hoặc đổi thành Folder chứa quái của game bạn)
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child:IsA("Model") and child.Name == MONSTER_NAME then
+            local humanoid = child:FindFirstChildOfClass("Humanoid")
+            local rootPart = child:FindFirstChild("HumanoidRootPart")
             
-            -- Đổi màu thanh máu dựa trên lượng máu còn lại
-            if healthRatio < 0.3 then
-                healthFrame.BackgroundColor3 = HEALTH_LOW
-            elseif healthRatio < 0.7 then
-                healthFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 0) -- Vàng
-            else
-                healthFrame.BackgroundColor3 = HEALTH_GOOD
+            if humanoid and rootPart and humanoid.Health > 0 then
+                local character = LocalPlayer.Character
+                if character and character:FindFirstChild("HumanoidRootPart") then
+                    local distance = (character.HumanoidRootPart.Position - rootPart.Position).Magnitude
+                    if distance < shortestDistance then
+                        shortestDistance = distance
+                        closest = child
+                    end
+                end
             end
         end
     end
+    return closest
+end
 
-    -- Lắng nghe sự kiện thay đổi máu
-    local healthConn
-    healthConn = humanoid.HealthChanged:Connect(function()
-        if not monster.Parent or humanoid.Health <= 0 then
-            billboard:Destroy()
-            highlight:Destroy()
-            healthConn:Disconnect()
-        else
-            updateHealth()
+-- 2. HÀM DI CHUYỂN MƯỢT MÀ (TWEEN)
+local function tweenTo(targetCFrame)
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local rootPart = character.HumanoidRootPart
+    local distance = (rootPart.Position - targetCFrame.Position).Magnitude
+    local duration = distance / TWEEN_SPEED
+
+    -- Tạo hiệu ứng bay mượt mà không bị giật
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
+    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetCFrame})
+    tween:Play()
+    tween.Completed:Wait() -- Đợi bay tới nơi mới làm việc tiếp
+end
+
+-- 3. HÀM TỰ ĐỘNG TRANG BỊ VŨ KHÍ VÀ CLICK ĐÁNH
+local function autoAttack()
+    local character = LocalPlayer.Character
+    local backpack = LocalPlayer.Backpack
+    if not character then return end
+
+    -- Tự động lấy vũ khí đầu tiên trong balo nếu tay đang trống
+    if not character:FindFirstChildOfClass("Tool") then
+        local tool = backpack:FindFirstChildOfClass("Tool")
+        if tool then
+            tool.Parent = character
         end
-    end)
-
-    updateHealth() -- Chạy cập nhật lần đầu tiên
-end
-
--- QUẢN LÝ QUÉT QUÁI VẬT TRONG CÁC KHU VỰC
--- Thay "Workspace" thành Folder chứa quái của bạn nếu có (Ví dụ: Workspace.Enemies)
-local monsterContainer = Workspace 
-
--- Quét các quái vật đã có sẵn khi vừa vào game
-for _, child in ipairs(monsterContainer:GetChildren()) do
-    if child:IsA("Model") then
-        createMonsterESP(child)
     end
+
+    -- Kích hoạt click chuột ảo để tấn công
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton1(Vector2.new(0,0))
 end
 
--- Tự động quét và áp dụng khi quái vật mới xuất hiện (Respawn)
-monsterContainer.ChildAdded:Connect(function(child)
-    task.wait(0.1) -- Đợi một chút để quái vật tải đủ bộ phận
-    if child:IsA("Model") then
-        createMonsterESP(child)
+-- 4. VÒNG LẶP CHÍNH (MAIN LOOP)
+task.spawn(function()
+    while _G.AutoFarm do
+        task.wait(0.1) -- Giảm tải cho game
+        
+        local character = LocalPlayer.Character
+        if not character or not character:FindFirstChild("HumanoidRootPart") then continue end
+        
+        local monster = getClosestMonster()
+        if monster and monster:FindFirstChild("HumanoidRootPart") then
+            -- Tính toán vị trí an toàn ngay trên đầu quái vật
+            local targetPos = monster.HumanoidRootPart.CFrame * CFrame.new(0, FARM_HEIGHT, 0)
+            
+            -- Nếu ở quá xa thì di chuyển tới, nếu đã ở gần thì khóa vị trí và đánh
+            if (character.HumanoidRootPart.Position - targetPos.Position).Magnitude > 10 then
+                tweenTo(targetPos)
+            else
+                character.HumanoidRootPart.CFrame = targetPos
+                autoAttack()
+            end
+        end
     end
 end)
 
